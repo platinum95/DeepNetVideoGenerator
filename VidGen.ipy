@@ -49,13 +49,19 @@ import imageio
 import random
 import scipy
 
+import math
+
 from ipywidgets import interact, fixed, Layout, Box, interactive, VBox, HBox
 import ipywidgets as widgets
 
 #%%
+my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
+tf.config.experimental.set_visible_devices(devices= my_devices, device_type='CPU')
+
+#%%
 print(device_lib.list_local_devices())
 
-imageRes = 128
+imageRes = 224
 hiddenFeatureLayerSize = 4096
 
 #%%
@@ -109,7 +115,7 @@ class PlotLossAccuracy(keras.callbacks.Callback):
         plt.title('Model Accuracy')
         plt.gca().xaxis.set_major_locator(MaxNLocator(integer=True))
         
-        if( self.image ):
+        if( self.image is not None ):
             plt.subplot( 143 )
             plt.imshow( self.image[ 0 ] )
             
@@ -142,10 +148,17 @@ class AudioLoader():
     samplerate = 44100
     numMelBands = 512
     
-    def __init__( self, path, numFrames ):
+    def __init__( self, path, numFrames=None ):
         self.numFrames = numFrames
         audio = wave.open( path )
         numSamples = audio.getnframes()
+        if( numFrames == None ):
+            rate = audio.getframerate()
+            duration = math.ceil( float(numSamples) / float(rate) )
+            # Video will be at 25 fps
+            numFrames = duration * 25
+        
+        assert numFrames > 0
         
         print( "Num audio samples: %i" % numSamples )
         samplesRaw = audio.readframes( audio.getnframes() )
@@ -242,8 +255,45 @@ class AudioLoader():
     
     def getBlock( self, firstIndex, lastIndex ):
         dataList = self.cqt
-        assert firstIndex >= 0 and lastIndex < dataList.shape[ 0 ], "Failed: 0<={}, {}<={}".format( firstIndex, lastIndex, dataList.shape[ 0 ] )
+        assert firstIndex >= 0 and lastIndex <= dataList.shape[ 0 ], "Failed: 0<={}, {}<={}".format( firstIndex, lastIndex, dataList.shape[ 0 ] )
         return dataList[ firstIndex : lastIndex ]
+    
+    def getAudioTimeBatches( self, i=0, timeSteps=10, batchSize=40, overlap=False ):
+        dataList = self.cqt
+        frameCount = self.cqt.shape[ 0 ]
+        if( batchSize == 0 ):
+            i = 0
+            batchSize = frameCount
+        assert( timeSteps <= batchSize )
+        
+        # Construct audio list, assuming the audio list is the same length as the video list (as it should be)
+        firstOutputSampleIdx = i * batchSize
+        firstRequiredSampleIdx = firstOutputSampleIdx - ( max( timeSteps, 1 ) - 1 )
+        
+        lastSampleIdx = ( firstOutputSampleIdx + batchSize ) if batchSize > 0 else frameCount 
+        lastSampleIdx = min( lastSampleIdx, frameCount )
+        batchSize = lastSampleIdx - firstOutputSampleIdx
+        
+        requiredDataArraySize = batchSize + ( max( timeSteps, 1 ) - 1 )
+        totalNumRequiredSamples = ( lastSampleIdx - firstRequiredSampleIdx ) + 1
+        audioData = self.getBlock( max( firstRequiredSampleIdx, 0 ), lastSampleIdx )
+        
+        if( timeSteps == 0 ):            
+            return audioData
+        
+        featureLen = audioData.shape[ 1 ]
+        requiredData = []
+            
+        if( firstRequiredSampleIdx < 0 ):
+            requiredData = np.array( [ audioData[ i ] if i >=0 else np.zeros( featureLen ) for i in range( firstRequiredSampleIdx, lastSampleIdx ) ] )
+        else:
+            requiredData = audioData
+        # Now create the overlapping windows
+        outputData = np.zeros( ( batchSize, timeSteps, featureLen ) )
+        for i in range( batchSize ):
+            outputData[ i, : ] = requiredData[ i : i + timeSteps ]
+        
+        return outputData
 
 #%%
 class DataHandler:
@@ -564,6 +614,15 @@ numBatches = playlistHandler.numVideoBatches( batchSize )
 batch = playlistHandler.loadVideoBatch( 126, 1 )
 
 #%%
+from SqueezeNet import *
+
+autoEncoderModel = SqueezeNetAutoencoder()
+inputObj = Input( ( 224, 224, 3 ) )
+outputObj = autoEncoderModel( inputObj )
+modelComp = Model( inputObj, outputObj, name='SqueezenetAutoencoder' )
+modelComp.summary()
+
+#%%
 kernel_init = glorot_uniform()
 bias_init = Constant( value=0.2 )
 
@@ -739,29 +798,23 @@ model.compile(optimizer=opt,
 # model.fit(x_train, y_train, epochs=5, callbacks=[pltCallBack, tbCallback])
 
 # Train autoencoder
-num_epochs = 32
+num_epochs = 64
 
-
-macroBatchSize = 1024
+isLstm = False
+macroBatchSize = 512
 numMacroBatches = playlistHandler.numVideoBatches( macroBatchSize )
-
-
-
-
-#sampleImage = playlistHandler.dataHandlerList[ 0 ].getVideoTimeBatches( i=123, timeSteps=0, batchSize=1 )
 
 sampleImage = playlistHandler.loadVideoBatch( 120, 1 )
 # Create an instance of our callback functions class, to plot our loss function and accuracy with each epoch.
 pltCallBack = PlotLossAccuracy( sampleImage, model )
 tbCallback = keras.callbacks.TensorBoard( log_dir='./logs', write_images=True )
 blockSize = 0
-batchSize = 128
+batchSize = 64
 timeSteps = 2
 startAt = 8
 #handlers = [ dataHandler1, dataHandler2 ]
 
 #model.fit( ds.batch( 128 ).repeat(), epochs=32, steps_per_epoch=32, callbacks=[ pltCallBack, tbCallback ] )
-
 for e in range( num_epochs ):
     for mvb in range( numMacroBatches ):
         macroVideoBatch = playlistHandler.loadVideoBatch( mvb, macroBatchSize )
@@ -772,49 +825,27 @@ for e in range( num_epochs ):
                    batch_size=batchSize, epochs=1,
                    validation_data=( validation_in, validation_out ),
                    callbacks=[ pltCallBack ] )#, tbCallback ] )
-        
-for i in range( 200 ):
-    dataHandler = playlistHandler.dataHandlerList[ i % 2 ]
-    for x in range( startAt, dataHandler.getBlockCount( blockSize ) ):
-        train_in = []
-        train_out = []
-        valid_in = []
-        valid_out = []
-        if( isLstm ):    
-            timeBatch = dataHandler.getTimeBatches( i=x, timeSteps=timeSteps, batchSize=blockSize )
-            train_in = timeBatch
-            train_out = timeBatch[ :, -1 ]
-            # Validate with training data for now since we're dealing with order-sensitive items
-            validation_in = train_in
-            validation_out = train_out
-        else:
-            images = dataHandler.getBlock( x, blockSize )
-            train_in, validation_in = skl.model_selection.train_test_split( images, test_size=0.05, random_state=0)
-            train_out = train_in
-            validation_out = validation_in
-            
-        model.fit( train_in, train_out, 
-                   batch_size=batchSize, epochs=num_epochs,
-                   validation_data=( validation_in, validation_out ),
-                   callbacks=[ pltCallBack ] )#, tbCallback ] )
-    startAt = 0
 
 
 #%%
+import math
 dataHandler = playlistHandler.dataHandlerList[ 3 ]
-frames = dataHandler.getVideoTimeBatches( 0, 0, 0 )
 
-predictions = ( videoModel.predict( frames ) * 255.0 ).astype( np.uint8 )
+chunkSize = 1024
+numChunks = dataHandler.getTimeBlockCount( chunkSize, 0 )
 
-frames = ( frames * 255.0 ).astype( np.uint8 )
-
-for idx, image in enumerate( predictions ):
-    srcImage = frames[ idx ]
-    estImage = image
-    imagePath = os.path.join( "./imageOutputs", "{0:05d}.bmp".format( idx ) )
-    imageio.imwrite( imagePath, np.concatenate( (srcImage, estImage), 1 ) )
+for i in range( numChunks ):
+    frames = dataHandler.getVideoTimeBatches( i, 0, chunkSize )
+    predictions = ( model.predict( frames ) * 255.0 ).astype( np.uint8 )
+    frames = ( frames * 255.0 ).astype( np.uint8 )
     
-command = 'ffmpeg -r 25 -start_number 0 -i imageOutputs/%05d.bmp -i {} -c:v libx264 -vf "scale=512:256,fps=25,format=yuv420p" outputFromAudio.mp4'.format( dataHandler.audioTrackPath )
+    for idx, image in enumerate( predictions ):
+        srcImage = frames[ idx ]
+        estImage = image
+        imagePath = os.path.join( "./imageOutputs", "{0:05d}.bmp".format( ( i * chunkSize ) + idx ) )
+        imageio.imwrite( imagePath, np.concatenate( (srcImage, estImage), 1 ) )
+    
+command = 'ffmpeg -r 25 -start_number 0 -i imageOutputs/%05d.bmp -i {} -c:v libx264 -vf "scale=512:256,fps=25,format=yuv420p" outputFromAudio3.mp4'.format( dataHandler.audioTrackPath )
 #command = "ffmpeg -r 1/5 -i ./output/out%d.png -c:v libx264 -vf scale=256:256 fps=25 -pix_fmt yuv420p out.mp4"
 subprocess.run( command, shell=True, capture_output=True )
 
@@ -826,20 +857,30 @@ modelPath3 = "./ailbheBasicModel_model_weights"
 tf.saved_model.save( model, modelPath )
 model.save( modelPath2 )
 model.save( modelPath3 )
-model.save_weights( modelPath3 )
 
 #%%
-model.load_weights( "ailbheBasicModel_model_weights" )
+#model.save_weights( "./ailbheModelSqueezeNet" )
+#%%
+autoEncoderModel.load_weights( "ailbheModelSqueezeNet" )
+#%%
+converter = tf.lite.TFLiteConverter.from_keras_model( autoEncoderModel )
+tflite_model = converter.convert()
+
+# Save the TF Lite model.
+with tf.io.gfile.GFile( 'autoEncoderModel.tflite', 'wb' ) as f:
+  f.write(tflite_model)
+
 #%%
 audioFFTLength = 128
-hiddenLayerSize = 4096
+hiddenLayerSize = 1024
 
 class AudioFeatureExtractor( Model ):
     def __init__( self, hiddenLayerSize, inputSize, **kwargs ):
         super( AudioFeatureExtractor, self ).__init__( **kwargs )
-        self.inputLayer = Input( [ None, inputSize ] )
+        #self.inputLayer = Input( [ 1, inputSize ] )
+        self.inputLayer = Input( batch_shape=( 1, 1, inputSize ) )
         
-        self.lstm1 = LSTM( inputSize )
+        self.lstm1 = LSTM( inputSize, stateful=True )
         self.dropout1 = tf.keras.layers.Dropout( 0.3 )
         self.d1 = Dense( hiddenLayerSize, activation='relu' )
         self.dropout2 = tf.keras.layers.Dropout( 0.3 )
@@ -870,8 +911,8 @@ isLstm = True
 # Create an instance of the model
 audioModelInst = AudioFeatureExtractor( hiddenLayerSize, audioFFTLength )
 audioModelInst.summary()
-#inputObj = Input( batch_shape=( None, None, 128, 128, 3 ) )
-inputObj = Input( ( None, audioFFTLength ) )
+inputObj = Input( batch_shape=( 1, 1, audioFFTLength ) )
+#inputObj = Input( ( None, audioFFTLength ) )
 outputObj = audioModelInst( inputObj )
 audioModel = Model( inputObj, outputObj, name='AudioModel' )
 
@@ -977,38 +1018,108 @@ for e in range( num_epochs ):
 #%%
 #audioModel.save_weights( 'ailbheBasicAudioModel_weights' )
 #%%
-#audioModel.load_weights( 'ailbheBasicAudioModel_weights' )
+audioModel.load_weights( 'ailbheBasicAudioModel_weights' )
+
+#%%
+audioExtractorStateful = True
+
+class AudioFeatureExtractorLayer( Layer ):
+    def __init__( self, hiddenLayerSize, inputSize, isStateful, **kwargs ):
+        super( AudioFeatureExtractorLayer, self ).__init__( **kwargs )
+        
+        self.lstm1 = LSTM( inputSize, stateful=isStateful )
+        self.dropout1 = tf.keras.layers.Dropout( 0.3 )
+        self.d1 = Dense( hiddenLayerSize, activation='relu' )
+        self.dropout2 = tf.keras.layers.Dropout( 0.3 )
+        self.d2 = Dense( hiddenLayerSize, activation='sigmoid' )
+        
+        
+    def call( self, x ):
+        x = self.lstm1( x )
+        x = self.dropout1( x )
+        x = self.d1( x )
+        x = self.dropout2( x )
+        x = self.d2( x )
+        return x
+
+class FullModel( Model ):
+    def __init__( self, hiddenLayerSize, inputSize, **kwargs ):
+        super( FullModel, self ).__init__( **kwargs )
+        self.audioLayer = AudioFeatureExtractorLayer( hiddenLayerSize, inputSize, audioExtractorStateful )
+        self.videoLayer = SqueezeNetDecoder( hiddenLayerSize )
+    
+    def call( self, x ):
+        x = self.audioLayer( x )
+        x = self.videoLayer( x )
+        return x
+
+# Create an instance of the model
+fullModelInst = FullModel( hiddenLayerSize, audioFFTLength )
+
+if( audioExtractorStateful ):
+    inputObj = Input( batch_shape=( 1, 1, audioFFTLength ) )
+else:
+    inputObj = Input( ( None, audioFFTLength ) )
+
+fullModel = Model( inputObj, fullModelInst( inputObj ), name='FullModel' )
+
+#%%
+fullModel.layers[1].layers[0].set_weights( audioModel.get_weights() )
+fullModel.layers[1].layers[1].set_weights( autoEncoderModel.layers[ 1 ].get_weights() )
+audioModel.save_weights( 'ailbheFullModel_weights' )
+#%%
+audioModel.load_weights( 'ailbheFullModel_weights' )
 
 #%%
 
 audioInputObj = Input( ( None, audioFFTLength ) )
 audioOutputObj = audioModel( audioInputObj )
 
-#decoderOutputTensor = videoModelModel.layers[1].layers[1].decoder( audioModel.outputs )
-videoDecoderOutputObj = videoModel.decoder( audioOutputObj ) #audioModel.outputs[ 0 ] )
+videoDecoderOutputObj = autoEncoderModel.decoder( audioOutputObj ) #audioModel.outputs[ 0 ] )
 fullModelOutputFn = keras.backend.function( audioInputObj, videoDecoderOutputObj )
 
-#output = model2(model1.outputs)
-#joinedModel = Model(model1.inputs,output)
-#joinedModel = Model( audioModel.inputs, videoDecoderOutputObj )
+fullModel = Model( audioInputObj, videoDecoderOutputObj )
 
 #%%
-blockSize = 1024
+blockSize = 256
 dataHandler = playlistHandler.dataHandlerList[ 3 ]
 numBlocks = dataHandler.getBlockCount( blockSize )
 
 imgIdx = 0
 for i in range( numBlocks ):
     audioBatches, videoBatches = dataHandler.getAudioVideoData( i, audioTimesteps, videoTimesteps=0, batchSize=blockSize )
-    predictions = fullModelOutputFn( audioBatches )
+    predictions = fullModel.predict( audioBatches )
     predictions = ( predictions * 255.0 ).astype( np.uint8 )
     for img in predictions:
         imagePath = os.path.join( "./imageOutputs", "{0:05d}.bmp".format( imgIdx ) )
         imgIdx = imgIdx + 1
         imageio.imwrite( imagePath, img )
-        
 
 #%%
-command = 'ffmpeg -r 25 -start_number 0 -i ./imageOutputs/%05d.bmp -i {} -c:v libx264 -vf "scale=512:256,fps=25,format=yuv420p" outputFromAudio3.mp4'.format( dataHandler.audioTrackPath )
+command = 'ffmpeg -r 25 -start_number 0 -i ./imageOutputs/%05d.bmp -i {} -c:v libx264 -vf "scale=512:256,fps=25,format=yuv420p" outputFromAudio4.mp4'.format( dataHandler.audioTrackPath )
 #command = "ffmpeg -r 1/5 -i ./output/out%d.png -c:v libx264 -vf scale=256:256 fps=25 -pix_fmt yuv420p out.mp4"
 subprocess.run( command, shell=True, capture_output=True )
+
+#%%
+audioLoader = AudioLoader( "./data/canon.wav" )
+audioCqtData = audioLoader.cqt
+numAudioFrames = audioCqtData.shape[ 0 ]
+blockSize = 1
+audioTimesteps = 1
+
+numBlocks = math.ceil( float( numAudioFrames ) / float( blockSize ) )
+
+imgIdx = 0
+for i in range( numBlocks ):
+    j = i * blockSize
+    audioSlice = audioLoader.getAudioTimeBatches( i=i, timeSteps=audioTimesteps, batchSize=blockSize )
+    predictions = ( fullModel.predict( audioSlice ) * 255.0 ).astype( np.uint8 )
+    for img in predictions:
+        imagePath = os.path.join( "./imageOutputs", "{0:05d}.bmp".format( imgIdx ) )
+        imgIdx = imgIdx + 1
+        imageio.imwrite( imagePath, img )
+#%%
+command = 'ffmpeg -r 25 -start_number 0 -i ./imageOutputs/%05d.bmp -i {} -c:v libx264 -vf "scale=512:256,fps=25,format=yuv420p" outputFromAilbheAudio2.mp4'.format( './data/canon.wav' )
+#command = "ffmpeg -r 1/5 -i ./output/out%d.png -c:v libx264 -vf scale=256:256 fps=25 -pix_fmt yuv420p out.mp4"
+subprocess.run( command, shell=True, capture_output=True )
+
