@@ -39,12 +39,8 @@ import sklearn as skl
 from sklearn import datasets, linear_model
 from sklearn.model_selection import cross_val_score
 
-import pytube
-from pytube import YouTube, Playlist
-import wave
-import glob
-import librosa
-import librosa.display
+
+
 import imageio
 import random
 import scipy
@@ -53,6 +49,9 @@ import math
 
 from ipywidgets import interact, fixed, Layout, Box, interactive, VBox, HBox
 import ipywidgets as widgets
+
+
+from DataHandler import *
 
 #%%
 my_devices = tf.config.experimental.list_physical_devices(device_type='CPU')
@@ -139,480 +138,7 @@ def load_model_from_disk():
         return model_from_json( json_file.read() )
     
 #%%
-class AudioLoader():
-    audioPath = r""
-    fftData = []
-#    mfcData = []
-    numFrames = 0
-    windowLength = 1024
-    samplerate = 44100
-    numMelBands = 512
-    
-    def __init__( self, path, numFrames=None ):
-        self.numFrames = numFrames
-        audio = wave.open( path )
-        numSamples = audio.getnframes()
-        if( numFrames == None ):
-            rate = audio.getframerate()
-            duration = math.ceil( float(numSamples) / float(rate) )
-            # Video will be at 25 fps
-            numFrames = duration * 25
-        
-        assert numFrames > 0
-        
-        print( "Num audio samples: %i" % numSamples )
-        samplesRaw = audio.readframes( audio.getnframes() )
-        npSampleArray = np.frombuffer( samplesRaw, dtype=np.int16 ).astype( np.float32 )
-        npSampleArray /= float( ( 2 ** 15 ) - 1 )
-        npSampleArray -= np.mean( npSampleArray )
-        npSampleArray /= np.std( npSampleArray )
-        
-        self.windowLength = numSamples // numFrames
-        print( "Window Length: %d" % self.windowLength )
-        windowsAligned = True
-        if( numSamples % numFrames != 0 ):
-            windowsAligned = False
-            self.windowLength += 1
-            numRequiredSamples = self.windowLength * numFrames
-            assert( numRequiredSamples > numSamples )
-            padSize = numRequiredSamples - numSamples
-            print( "Padding with %d samples" % padSize )
-            npSampleArray = np.pad( npSampleArray, ( 0, padSize ), 'constant' )
-            print( "Now have %d samples" % npSampleArray.shape[ 0 ] )
-            numSamples = npSampleArray.shape[ 0 ]
-        
-        pickledDataPath = path + ".pkl"
-        if os.path.isfile( pickledDataPath ):
-            dataDict = pickle.load( open( pickledDataPath,'rb' ) )           
-            self.cqt = dataDict[ 'cqt' ]
-            return
-            
-        numWindows = ( numSamples // self.windowLength )
-        assert numWindows == self.numFrames, '{} != {}'.format( numWindows, self.numFrames )
-        
-        fftWindowSize = self.windowLength
-        fftWindowHop = self.windowLength
-#        mfc = librosa.feature.melspectrogram( npSampleArray, sr=self.samplerate,
-#                                              n_fft=fftWindowSize,
-#                                              hop_length=fftWindowHop,
- #                                             window=scipy.signal.windows.boxcar,
- #                                             center=False,
-#                                              n_mels=self.numMelBands )
-        
-        # output should be (numMelBands, numFrames) so swap axes
-#        mfc = np.swapaxes( mfc, 0, 1 )
-#        for winIdx in range( mfc.shape[ 0 ] ):            
-      #      mfc[ winIdx ] -= np.mean( mfc[ winIdx ] )
-        #    mfc[ winIdx ] /= np.std( mfc[ winIdx ] )
-        
-       # mfc = mfc / mfcStd
-        
- #       self.mfcData = mfc # np.empty( ( self.numFrames, 1024 )
-#        self.fftData = librosa.core.stft( npSampleArray,
-#                                          n_fft=fftWindowSize,
-#                                          window=scipy.signal.windows.boxcar,
-#                                          hop_length=fftWindowHop,
-#                                          center=False )
-        
-#        self.fftData =  np.absolute( self.fftData )
-#        self.fftData = np.swapaxes( self.fftData, 0, 1 )
-#        self.fftData /= fftWindowSize
-        
-#        nyquistFreq = ( 1.0 / self.samplerate ) / 2.0
-        numOctaves = 8
-        binsPerOctave = 16
-        numBins = numOctaves * binsPerOctave
-        
-        cqt = librosa.core.pseudo_cqt( npSampleArray,
-                                       bins_per_octave=binsPerOctave,
-                                       n_bins=numBins,
-                                       sr=self.samplerate,
-                                       window=scipy.signal.windows.boxcar,
-                                       hop_length=fftWindowHop )
-        cqt = np.swapaxes( cqt, 0, 1 )
-        cqt /= np.std( cqt )
-  #      if not windowsAligned:
-  #          cqt = cqt[ :-1 ]
-        self.cqt = cqt
-        
-        
-        dataDict = { 'cqt' : self.cqt }
-        pickle.dump( dataDict, open( pickledDataPath, "wb" ) )
-        #self.fftData /= np.std( self.fftData )
-       # self.fftData = np.log10( self.fftData + 1.0 )
-        #for winIdx in range( self.fftData.shape[ 0 ] ):            
-            #self.fftData[ winIdx ] -= np.mean( self.fftData[ winIdx ] )
-            #self.fftData[ winIdx ] /= np.std( self.fftData[ winIdx ] )
-#       fftInput = np.resize(npsamples,(self.numFrames * 1024))
-#        lrFft = np.absolute(librosa.core.stft(fftInput, n_fft=2048, hop_length=1024))
-#        lrFft = lrFft[1:]
-#        lrFft = np.swapaxes(lrFft, 0, 1)
-#        lrFft = lrFft + 1
-#        lrFft = np.log10(lrFft) / np.log10(2.5)
-#        maxFft = np.amax( lrFft )
-#        lrFft = lrFft / maxFft
-#        self.fftData = np.resize(lrFft, ( self.numFrames, lrFft.shape[ 1 ] ) )
-    
-    def getBlock( self, firstIndex, lastIndex ):
-        dataList = self.cqt
-        assert firstIndex >= 0 and lastIndex <= dataList.shape[ 0 ], "Failed: 0<={}, {}<={}".format( firstIndex, lastIndex, dataList.shape[ 0 ] )
-        return dataList[ firstIndex : lastIndex ]
-    
-    def getAudioTimeBatches( self, i=0, timeSteps=10, batchSize=40, overlap=False ):
-        dataList = self.cqt
-        frameCount = self.cqt.shape[ 0 ]
-        if( batchSize == 0 ):
-            i = 0
-            batchSize = frameCount
-        assert( timeSteps <= batchSize )
-        
-        # Construct audio list, assuming the audio list is the same length as the video list (as it should be)
-        firstOutputSampleIdx = i * batchSize
-        firstRequiredSampleIdx = firstOutputSampleIdx - ( max( timeSteps, 1 ) - 1 )
-        
-        lastSampleIdx = ( firstOutputSampleIdx + batchSize ) if batchSize > 0 else frameCount 
-        lastSampleIdx = min( lastSampleIdx, frameCount )
-        batchSize = lastSampleIdx - firstOutputSampleIdx
-        
-        requiredDataArraySize = batchSize + ( max( timeSteps, 1 ) - 1 )
-        totalNumRequiredSamples = ( lastSampleIdx - firstRequiredSampleIdx ) + 1
-        audioData = self.getBlock( max( firstRequiredSampleIdx, 0 ), lastSampleIdx )
-        
-        if( timeSteps == 0 ):            
-            return audioData
-        
-        featureLen = audioData.shape[ 1 ]
-        requiredData = []
-            
-        if( firstRequiredSampleIdx < 0 ):
-            requiredData = np.array( [ audioData[ i ] if i >=0 else np.zeros( featureLen ) for i in range( firstRequiredSampleIdx, lastSampleIdx ) ] )
-        else:
-            requiredData = audioData
-        # Now create the overlapping windows
-        outputData = np.zeros( ( batchSize, timeSteps, featureLen ) )
-        for i in range( batchSize ):
-            outputData[ i, : ] = requiredData[ i : i + timeSteps ]
-        
-        return outputData
-
-#%%
-class DataHandler:
-    dataPath = r"./data/"
-    resolution = imageRes
-
-    audioLoader = None
-    
-    sourceDownloaded = False
-    framesExtracted = False
-    audioTrackExtracted = False
-    
-    ytStream = None
-    datasetPath = None
-    videoFramesPath = None
-    audioTrackPath = None
-    frameFileList = []
-    frameCount = 0    
-    title = ""
-    
-    def __init__( self, url ):
-        dataDir = os.path.dirname( self.dataPath );
-        if not os.path.exists( dataDir ):
-            os.makedirs( dataDir )
-        
-        yt = YouTube( url )
-        self.title = yt.title
-        print( "Found YouTube video " + self.title )
-        ytStreamList =  yt.streams.filter( progressive=True, res="360p" )
-        if( len( ytStreamList ) < 1 ):
-            print( "No valid video found" )
-            return
-        self.ytStream = ytStreamList.first()
-        assert( self.ytStream )
-        
-        self.datasetPath = os.path.join( self.dataPath, yt.video_id )
-        if not os.path.exists( self.datasetPath ):
-            os.makedirs( self.datasetPath )
-        self.sourceVideoPath = os.path.join( self.datasetPath, self.ytStream.default_filename )
-        self.audioTrackPath = os.path.join( self.datasetPath, "audio.wav" )
-        self.videoFramesPath = os.path.join( self.datasetPath, "frames" )
-        self.tfRecordPath = os.path.join( self.datasetPath, "data.tfrecord")
-        self.metadataPath = os.path.join( self.datasetPath, "metadata.pkl" )
-        self.downloadSource()
-                
-    def downloadSource( self ):
-        # Check if the video already exists
-        if not os.path.isfile( self.sourceVideoPath ):
-            print( "Downloading video " + self.title )
-            self.ytStream.download( self.datasetPath )
-        else:
-            print( "Video " + self.title + " already downloaded" )
-        self.sourceDownloaded = True
-        
-    def deleteSource( self ):
-        if os.path.isfile( self.sourceVideoPath ):
-            os.unlink( self.sourceVideoPath )
-        self.sourceDownloaded = False
-    
-    def extractData( self ):
-        print( "Extracting data for " + self.title )
-        self.downloadSource()
-        self.extractVideoFrames()
-        self.extractAudioTrack()
-        self.audioLoader = AudioLoader( self.audioTrackPath, self.frameCount )
-        self.populateFrameContext( True )
-    
-    def populateFrameContext( self, keepFrames=False ):
-        if not os.path.isfile( self.metadataPath ):
-            self.downloadSource()
-            self.extractVideoFrames()
-            if not keepFrames:
-                self.deleteVideoFrames()
-            metadataDict = { 'framecount' : self.frameCount }
-            pickle.dump( metadataDict, open( self.metadataPath, "wb" ) )
-        else:
-            metadataDict = pickle.load( open( self.metadataPath,'rb' ) )           
-            self.frameCount = metadataDict[ 'framecount' ]
-            self.frameFileList = [ os.path.join( self.videoFramesPath, "{0:05d}.bmp".format( i ) ) for i in range( 1, self.frameCount + 1 ) ]
-        
-    def clearData( self ):
-        print( "Clearing data for " + self.title )
-        self.deleteVideoFrames()
-        self.deleteAudioTrack()
-        self.audioLoader = None
-        
-    def extractAudioTrack( self ):
-        if not os.path.isfile( self.audioTrackPath ):
-            command = 'ffmpeg -i "%s" -vn -acodec pcm_s16le -ac 1 -ar 44100 -vn %s' % ( self.sourceVideoPath, self.audioTrackPath )
-            # TODO - verify ffmpeg exit status
-            subprocess.call( command, shell=True )
-        audioTrackExtracted = True
-        
-    def deleteAudioTrack( self ):
-        if os.path.isfile( self.audioTrackPath ):
-            os.unlink( self.audioTrackPath )
-        audioTrackExtracted = False
-    
-    def extractVideoFrames( self ):
-        if not os.path.exists( self.videoFramesPath ):
-            os.makedirs( self.videoFramesPath )
-            outputImagePattern = os.path.join( self.videoFramesPath, "%05d.bmp" )
-            command = 'ffmpeg -i "%s" -r 25 -vf scale=%i:%i "%s"' % \
-                ( self.sourceVideoPath, self.resolution, self.resolution, outputImagePattern )
-            # TODO - confirm this returned properly
-            subprocess.call( command, shell=True )
-            
-        self.frameFileList = sorted( glob.glob( os.path.join( self.videoFramesPath, "*.bmp" ) ) )
-        self.frameCount = len( self.frameFileList )
-        self.framesExtracted = True
-    
-    def deleteVideoFrames( self ):
-        if os.path.exists( self.videoFramesPath ):
-            shutil.rmtree( self.videoFramesPath )
-        self.framesExtracted = False
-    
-    def getBlockCount( self, blockSize ):
-        if( blockSize == 0 ):
-            return 1
-        offset = 0
-        if( self.frameCount % blockSize != 0 ):
-            offset = 1
-        return ( self.frameCount // blockSize ) + offset
-    
-    def getTimeBlockCount( self, blockSize, timeSteps ):
-        return ( self.frameCount // blockSize ) - 1
-    
-    def getVideoTimeBatches( self, i=0, timeSteps=10, batchSize=40, overlap=False ):
-        if( batchSize == 0 ):
-            i = 0
-            batchSize = self.frameCount
-        assert( timeSteps <= batchSize )
-        
-        # Construct audio list, assuming the audio list is the same length as the video list (as it should be)
-        firstOutputSampleIdx = i * batchSize
-        firstRequiredSampleIdx = firstOutputSampleIdx - ( max( timeSteps, 1 ) - 1 )
-                
-        lastSampleIdx = ( firstOutputSampleIdx + batchSize ) if batchSize > 0 else self.frameCount
-        lastSampleIdx = min( lastSampleIdx, self.frameCount )
-        batchSize = lastSampleIdx - firstOutputSampleIdx
-        
-        requiredDataArraySize = batchSize + ( max( timeSteps, 1 ) - 1 )
-        totalNumRequiredSamples = ( lastSampleIdx - firstRequiredSampleIdx ) + 1
-        
-        requiredFilesList = [ ( self.frameFileList[ i ] if i >=0 else "" ) for i in range( firstRequiredSampleIdx, lastSampleIdx ) ]
-        
-        requiredImages = np.array( [ ( np.array( Image.open( fname ) ) if fname else np.zeros( ( imageRes, imageRes, 3 ) ) ) for fname in requiredFilesList ] )
-        requiredImages = requiredImages.astype( 'float32' ) / 255.0
-        if( timeSteps == 0 ):            
-            return requiredImages
-        
-        outputData = np.zeros( ( batchSize, timeSteps, imageRes, imageRes, 3 ) )
-        for i in range( batchSize ):
-            outputData[ i, : ] = requiredImages[ i : i + timeSteps ]
-        return outputData
-        
-    def getAudioTimeBatches( self, i=0, timeSteps=10, batchSize=40, overlap=False ):
-        if( batchSize == 0 ):
-            i = 0
-            batchSize = self.frameCount
-        assert( timeSteps <= batchSize )
-        
-        # Construct audio list, assuming the audio list is the same length as the video list (as it should be)
-        firstOutputSampleIdx = i * batchSize
-        firstRequiredSampleIdx = firstOutputSampleIdx - ( max( timeSteps, 1 ) - 1 )
-        
-        lastSampleIdx = ( firstOutputSampleIdx + batchSize ) if batchSize > 0 else self.frameCount 
-        lastSampleIdx = min( lastSampleIdx, self.frameCount )
-        batchSize = lastSampleIdx - firstOutputSampleIdx
-        
-        requiredDataArraySize = batchSize + ( max( timeSteps, 1 ) - 1 )
-        totalNumRequiredSamples = ( lastSampleIdx - firstRequiredSampleIdx ) + 1
-        audioData = self.audioLoader.getBlock( max( firstRequiredSampleIdx, 0 ), lastSampleIdx )
-        
-        if( timeSteps == 0 ):            
-            return audioData
-        
-        featureLen = audioData.shape[ 1 ]
-        requiredData = []
-            
-        if( firstRequiredSampleIdx < 0 ):
-            requiredData = np.array( [ audioData[ i ] if i >=0 else np.zeros( featureLen ) for i in range( firstRequiredSampleIdx, lastSampleIdx ) ] )
-        else:
-            requiredData = audioData
-        # Now create the overlapping windows
-        outputData = np.zeros( ( batchSize, timeSteps, featureLen ) )
-        for i in range( batchSize ):
-            outputData[ i, : ] = requiredData[ i : i + timeSteps ]
-        
-        return outputData
-    
-    def getAudioVideoData( self, i=0, audioTimesteps=10, videoTimesteps=10, batchSize=40 ):
-        # If timesteps==0, return a singleton, else return a list
-        assert( ( audioTimesteps >= 0 ) and ( videoTimesteps >= 0 ) and ( batchSize >= 0 ) and ( i >= 0 ) )
-        
-        audioData = self.getAudioTimeBatches( i, timeSteps=audioTimesteps, batchSize=batchSize )
-        videoData = self.getVideoTimeBatches( i=i, timeSteps=videoTimesteps, batchSize=batchSize )
-        assert( audioData.shape[ 0 ] == videoData.shape[ 0 ] )
-        return audioData, videoData
-            
-    def getBlock( self, i=0, blockSize=40 ):
-        assert( blockSize >= 0 )
-        fileSlice = []
-        if( blockSize > 0 ):
-            index = i * blockSize
-            assert( index < self.frameCount - 1 )
-            lastIndex = min( index + blockSize, self.frameCount )
-            
-            fileSlice = self.frameFileList[ index : lastIndex ]
-        else:
-            fileSlice = self.frameFileList
-            
-        images = np.array( [ np.array( Image.open( fname ) ) for fname in fileSlice ] )
-        images = images.astype( 'float32' ) / 255.0
-        
-        return images
-
-# dataHandler1 = DataHandler( "https://www.youtube.com/watch?v=SPlQpGeTbIE" )
-# dataHandler2 = DataHandler( "https://www.youtube.com/watch?v=XOic6pVAN30" )
-
-# dataHandler1.extractData()
-
-#%%
-class PlaylistHandler:
-    dataHandlerList = []
-    playlist = None
-    allFileList = []
-    def __init__( self, url ):
-        for i in range( 3 ):
-            self.playlist = Playlist( url )
-            self.videoUrls = self.playlist.video_urls
-            if( len( self.videoUrls ) ):
-                break
-            time.sleep( 1 )
-        
-        assert( len( self.videoUrls ) )
-        print( "Loading playlist with %i videos" % len( self.videoUrls ) )
-        for videoUrl in self.videoUrls:
-            self.dataHandlerList.append( DataHandler( videoUrl ) )
-            self.dataHandlerList[ -1 ].extractData()
-            
-    
-    def loadFileList( self ):
-        self.allFileList = []
-        for dataHandler in self.dataHandlerList:
-            dataHandler.extractData()
-            self.allFileList.extend( dataHandler.frameFileList )
-            
-        random.shuffle( self.allFileList )
-        
-    def numVideoBatches( self, batchSize ):
-        return len( self.allFileList ) // batchSize
-    
-    def loadVideoBatch( self, idx, batchSize ):
-        startIdx = idx * batchSize
-        lastIdx = min( len( self.allFileList ), startIdx + batchSize )
-        
-        print( "From {} to {}".format( startIdx, lastIdx ) )
-        fileSlice = self.allFileList[ startIdx : lastIdx ]
-        requiredImages = np.array( [ ( np.array( Image.open( fname ) ) if fname else np.zeros( ( imageRes, imageRes, 3 ) ) ) for fname in fileSlice ] )
-        requiredImages = requiredImages.astype( 'float32' ) / 255.0
-        return requiredImages
-            
-
-class ImageSource:
-    def __init__( self, plHandler, batchSize ):
-        self.plHandler = plHandler
-        self.batchSize = batchSize
-        
-    # The generator - yield a single index from file path list. Assume single threaded caller
-    def __call__( self ):
-        for dataHandler in self.plHandler.dataHandlerList:
-            dataHandler.extractData()
-            for idx, imagePath in enumerate( dataHandler.frameFileList ):
-                yield( idx )
-            dataHandler.clearData()
-    counter = 0
-    # The mapper - return a loaded image
-    def mapPathToImage( self, pathIndex ):
-        self.counter = self.counter + 1
-        path = self.plHandler.dataHandlerList[ 0 ].frameFileList[ pathIndex ]
-        assert( os.path.isfile( path ) )
-        image = ( np.array( Image.open( path ) ) / 255.0 ).astype( np.float32 )
-        return image
-             
-#playlistHandler = PlaylistHandler( "https://www.youtube.com/playlist?list=PLY1ApGMvX-K1xkK91vhQHUCDPKTN7pu57" )
 playlistHandler = PlaylistHandler( "https://www.youtube.com/playlist?list=PLvTaGTS7sTNyxehFKJqggR02dxABc-yBm" )
-
-
-#%%
-imageSource = ImageSource( playlistHandler, 128 )
-# data_gen = tf.data.Dataset.from_generator(
-#             imageSource,
-#             output_types = ( tf.uint32 ),
-#             output_shapes = ( tf.TensorShape([]) ) 
-# )
-dataset = tf.data.Dataset.range( imageSource.plHandler.dataHandlerList[ 0 ].frameCount )
-
-def mapFn( pathIdx ):
-    image = tf.py_function( imageSource.mapPathToImage, [ pathIdx ], tf.float32 )
-    image.set_shape( ( imageRes, imageRes, 3 ) )
-    return ( image, image )
-
-ds = dataset.map( lambda x: mapFn( x ), num_parallel_calls=12 ) #imageSource.mapPathToImage( x ) )
-
-
-
-# for count_batch in data_gen.repeat().batch(10).take(10):
-#     print( count_batch[ 0 ].numpy() )
-
-
-#%%
-
-playlistHandler.loadFileList()
-batchSize = 1024
-numBatches = playlistHandler.numVideoBatches( batchSize )
-
-batch = playlistHandler.loadVideoBatch( 126, 1 )
-
 #%%
 from SqueezeNet import *
 
@@ -623,152 +149,8 @@ modelComp = Model( inputObj, outputObj, name='SqueezenetAutoencoder' )
 modelComp.summary()
 
 #%%
-kernel_init = glorot_uniform()
-bias_init = Constant( value=0.2 )
 
-class InceptionModule( Layer ):
-    def __init__( self, filters_1x1, filters_3x3_reduce, filters_3x3, filters_5x5_reduce, filters_5x5, filters_pool_proj, name=None ):
-        super( InceptionModule, self ).__init__( name="InceptionModule" )
-        self.conv_1x1 = Conv2D(filters_1x1, (1, 1), padding='same', activation='relu', kernel_initializer=kernel_init, bias_initializer=bias_init)
-
-        self.conv_3x3_1 = Conv2D(filters_3x3_reduce, (1, 1), padding='same', activation='relu', kernel_initializer=kernel_init, bias_initializer=bias_init)
-        self.conv_3x3_2 = Conv2D(filters_3x3, (3, 3), padding='same', activation='relu', kernel_initializer=kernel_init, bias_initializer=bias_init)
-
-        self.conv_5x5_1 = Conv2D(filters_5x5_reduce, (1, 1), padding='same', activation='relu', kernel_initializer=kernel_init, bias_initializer=bias_init)
-        self.conv_5x5_2 = Conv2D(filters_5x5, (5, 5), padding='same', activation='relu', kernel_initializer=kernel_init, bias_initializer=bias_init)
-
-        self.pool_proj_1 = MaxPool2D((3, 3), strides=(1, 1), padding='same')
-        self.pool_proj_2 = Conv2D(filters_pool_proj, (1, 1), padding='same', activation='relu', kernel_initializer=kernel_init, bias_initializer=bias_init)
-
-        self.concat_1 = Concatenate( axis=-1, name=name )
-    def call( self, x ):
-    
-        b0 = self.conv_1x1( x )
-
-        b1 = self.conv_3x3_1( x )
-        b1 = self.conv_3x3_2( b1 )
-
-        b2 = self.conv_5x5_1( x )
-        b2 = self.conv_5x5_2( b2 )
-
-        b3 = self.pool_proj_1( x )
-        b3 = self.pool_proj_2( b3 )
-
-        x = self.concat_1( [ b0, b1, b2, b3 ] )
-
-        return x
-
-class FrameEncoder( Layer ):
-    def __init__( self ):
-        # Convs should give ( inX, inY, numFilters )
-        # pools should divide by kernel size
-        # Aiming for 4096 in dense layer
-        # For input res 128, with 
-        super( FrameEncoder, self ).__init__( name="Encoder" )
-        
-        self.conv1 = Conv2D( 32, 3, padding='same', activation='relu', input_shape=( imageRes, imageRes, 3 ) )
-        self.maxPool1 = MaxPool2D( pool_size=( 2,2 ) )
-        self.conv2 = Conv2D( 64, 4, padding='same', activation='relu' )
-        self.maxPool2 = MaxPool2D( pool_size=( 2,2 ) )
-        
-        self.conv3 = Conv2D( 64, 5, padding='same', activation='relu' )
-        self.maxPool3 = MaxPool2D( pool_size=( 2,2 ) )
-        self.conv4 = Conv2D( 64, 6, padding='same', activation='relu' )
-        self.maxPool4 = MaxPool2D( pool_size=( 2,2 ) )
-      #  self.inceptionModule = InceptionModule( filters_1x1=192,
-      #                                    filters_3x3_reduce=96,
-      #                                    filters_3x3=208,
-      #                                    filters_5x5_reduce=16,
-      #                                    filters_5x5=48,
-      #                                    filters_pool_proj=64,
-      #                                    name='inception_4a' )
-
-        # should be 8 x 8 x 64 here
-        self.flatten = Flatten()
-        self.d1 = Dense( 4096, activation='relu' )
-        #self.d2 = Dense( 128, activation='sigmoid', use_bias=False )
-        
-    def call( self, encoderIn ):
-        x = encoderIn
-       # x = self.inceptionModule( x )
-        
-        x = self.conv1( x )
-        x = self.maxPool1( x )
-        x = self.conv2( x )
-        x = self.maxPool2( x )
-        
-        x = self.conv3( x )
-        x = self.maxPool3( x )
-        
-        x = self.conv4( x )
-        x = self.maxPool4( x )
-        
-        x = self.flatten( x )
-        x = self.d1( x )
-        #x = self.d2( x )
-        return x
-
-        
-    def compute_output_shape( self, input_shape ):
-        #input shape = [None, 299, 299, 3]
-        return [ None, 128 ]
-    
-class FrameDecoder( Layer ):
-    def __init__( self ):
-        super( FrameDecoder, self ).__init__( name="Decoder" )
-        #self.d2 = Dense( 128, activation='relu' )
-        self.d3 = Dense( 4096, activation='relu' )
-        self.unflatten = Reshape( ( 8, 8, 64 ) )
-        self.upSample1 = UpSampling2D( size=( 2, 2 ) )
-        self.deconv1 = Conv2DTranspose( 32, 4, padding='same', activation='relu' )
-        
-        self.upSample2 = UpSampling2D( size=( 2, 2 ) )
-        self.deconv2 = Conv2DTranspose( 3, 3, padding='same', activation='relu' )
-        
-        self.upSample3 = UpSampling2D( size=( 2, 2 ) )
-        self.deconv3 = Conv2DTranspose( 3, 3, padding='same', activation='relu' )
-        
-        self.upSample4 = UpSampling2D( size=( 2, 2 ) )
-        self.deconv4 = Conv2DTranspose( 3, 3, padding='same', activation='sigmoid', use_bias=False )
-    
-    def call( self, decoderIn ):
-        x = decoderIn
-        #x = self.d2( x )
-        x = self.d3( x )
-        x = self.unflatten( x )
-        
-        x = self.upSample1( x )
-        x = self.deconv1( x )
-        
-        x = self.upSample2( x )
-        x = self.deconv2( x )
-        
-        x = self.upSample3( x )
-        x = self.deconv3( x )
-        
-        x = self.upSample4( x )
-        x = self.deconv4( x )
-        return x
-    
-    def compute_output_shape( self, input_shape ):
-        #input shape = [None, 299, 299, 3]
-        return [ 128, 128, 3 ]
-      
-        
-class FrameAutoencoderModel( Model ):
-    def __init__( self ):
-        super( FrameAutoencoderModel, self ).__init__()
-        self.encoder = FrameEncoder()
-        #self.encoder = TimeDistributed( FrameEncoder() )
-        #self.lstm1 = LSTM( 128 )
-        self.decoder = FrameDecoder()
-    
-    def call( self, x ):
-        x = self.encoder( x )
-         #x = self.lstm1( x )
-        x = self.decoder( x )
-        return x
-
+from BasicModel import *
 isLstm = False
 # Create an instance of the model
 model = FrameAutoencoderModel()
@@ -780,8 +162,6 @@ modelComp.summary()
 
 
 #%%
-#loss_fn = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False)
-#loss_fn( images, predictions ).numpy()
 
 mse = tf.keras.losses.MeanSquaredError()
 #opt = keras.optimizers.SGD( lr=0.1, decay=1e-8, momentum=0.9, nesterov=True )
@@ -789,7 +169,6 @@ opt = keras.optimizers.Adam( lr=0.0001, decay=1e-8 )
 model.compile(optimizer=opt,
               loss=mse,
               metrics=['acc'])
-
 
 #%%
 # pltCallBack = PlotLossAccuracy()
@@ -812,9 +191,7 @@ blockSize = 0
 batchSize = 64
 timeSteps = 2
 startAt = 8
-#handlers = [ dataHandler1, dataHandler2 ]
 
-#model.fit( ds.batch( 128 ).repeat(), epochs=32, steps_per_epoch=32, callbacks=[ pltCallBack, tbCallback ] )
 for e in range( num_epochs ):
     for mvb in range( numMacroBatches ):
         macroVideoBatch = playlistHandler.loadVideoBatch( mvb, macroBatchSize )
@@ -905,7 +282,6 @@ class AudioFeatureExtractor( Model ):
         x = self.d2( x )
         return x
     
-
 
 isLstm = True
 # Create an instance of the model
@@ -1069,16 +445,6 @@ fullModel.layers[1].layers[1].set_weights( autoEncoderModel.layers[ 1 ].get_weig
 audioModel.save_weights( 'ailbheFullModel_weights' )
 #%%
 audioModel.load_weights( 'ailbheFullModel_weights' )
-
-#%%
-
-audioInputObj = Input( ( None, audioFFTLength ) )
-audioOutputObj = audioModel( audioInputObj )
-
-videoDecoderOutputObj = autoEncoderModel.decoder( audioOutputObj ) #audioModel.outputs[ 0 ] )
-fullModelOutputFn = keras.backend.function( audioInputObj, videoDecoderOutputObj )
-
-fullModel = Model( audioInputObj, videoDecoderOutputObj )
 
 #%%
 blockSize = 256
